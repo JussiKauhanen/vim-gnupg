@@ -1,5 +1,5 @@
 " Name:    gnupg.vim
-" Last Change: 2016 Dec 04
+" Last Change: 2016 Dec 05
 " Maintainer:  James McCoy <jamessan@jamessan.com>
 " Original Author:  Markus Braun <markus.braun@krawel.de>
 " Summary: Vim plugin for transparent editing of gpg encrypted files.
@@ -223,15 +223,21 @@ highlight default link GPGHighlightUnknownRecipient ErrorMsg
 
 " Section: Functions {{{1
 
-" Function: s:shellescape(s[, special]) {{{2
+" Function: s:shellescape(s[, special[, cygpath]]) {{{2
 "
 " Calls shellescape(), also taking into account 'shellslash'
 " when on Windows and using $COMSPEC as the shell.
 "
+" When cygpath is true, adjust the path to work with Gpg4win from cygwin.
+"
 " Returns: shellescaped string
 "
 function s:shellescape(s, ...)
-  let special = a:0 ? a:1 : 0
+  let special = get(a:1, 'special', 0)
+  let cygpath = get(a:1, 'cygpath', 0)
+  if s:useCygpath
+    let s = matchstr(system('cygpath -am '.shellescape(a:0)), '[^\x0a\x0d]*')
+  endif
   if exists('+shellslash') && &shell == $COMSPEC
     let ssl = &shellslash
     set noshellslash
@@ -373,6 +379,12 @@ function s:GPGInit(bufread)
   let s:GPGCipher = substitute(output, ".*Cipher: \\(.\\{-}\\)\n.*", "\\1", "")
   let s:GPGHash = substitute(output, ".*Hash: \\(.\\{-}\\)\n.*", "\\1", "")
   let s:GPGCompress = substitute(output, ".*Compress.\\{-}: \\(.\\{-}\\)\n.*", "\\1", "")
+  let s:GPGHome = matchstr(output, '.*Home: \zs.\{-}\ze\r\=\n')
+
+  let s:useCygpath = 0
+  if has('win32unix') && s:GPGHome =~ '\a:[/\]'
+    let s:useCygpath = 1
+  endif
 
   " determine if gnupg can use the gpg-agent
   if (str2float(gpgversion) >= 2.1 || (exists("$GPG_AGENT_INFO") && g:GPGUseAgent == 1))
@@ -476,7 +488,7 @@ function s:GPGDecrypt(bufread)
 
   " find the recipients of the file
   let cmd = { 'level': 3 }
-  let cmd.args = '--verbose --decrypt --list-only --dry-run --no-use-agent --logger-fd 1 ' . s:shellescape(filename)
+  let cmd.args = '--verbose --decrypt --list-only --dry-run --no-use-agent --logger-fd 1 ' . s:shellescape(filename, { 'cygpath': 1 })
   let output = s:GPGSystem(cmd)
 
   " Suppress the "N more lines" message when editing a file, not when reading
@@ -569,7 +581,7 @@ function s:GPGDecrypt(bufread)
   " we must redirect stderr (using shell temporarily)
   call s:GPGDebug(1, "decrypting file")
   let cmd = { 'level': 1, 'ex': silent . 'read ++edit !' }
-  let cmd.args = '--quiet --decrypt ' . s:shellescape(filename, 1)
+  let cmd.args = '--quiet --decrypt ' . s:shellescape(filename, { 'special': 1, 'cygpath': 1 })
   call s:GPGExecute(cmd)
 
   if (v:shell_error) " message could not be decrypted
@@ -706,7 +718,7 @@ function s:GPGEncrypt()
   let destfile = tempname()
   let cmd = { 'level': 1, 'ex': "'[,']write !" }
   let cmd.args = '--quiet --no-encrypt-to ' . options
-  let cmd.redirect = '>' . s:shellescape(destfile, 1)
+  let cmd.redirect = '>' . s:shellescape(destfile, { 'special': 1, 'cygpath': 1 })
   silent call s:GPGExecute(cmd)
 
   if (v:shell_error) " message could not be encrypted
@@ -1200,7 +1212,7 @@ function s:GPGNameToID(name)
 
   " ask gpg for the id for a name
   let cmd = { 'level': 2 }
-  let cmd.args = '--quiet --with-colons --fixed-list-mode --list-keys ' . s:shellescape(a:name)
+  let cmd.args = '--quiet --with-colons --fixed-list-mode --list-keys ' . s:shellescape(a:name, { 'cygpath': 1 })
   let output = s:GPGSystem(cmd)
 
   " when called with "--with-colons" gpg encodes its output _ALWAYS_ as UTF-8,
@@ -1365,7 +1377,7 @@ endfunction
 function s:GPGSystem(dict)
   let commandline = s:GPGCommand
   if (!empty(g:GPGHomedir))
-    let commandline .= ' --homedir ' . s:shellescape(g:GPGHomedir)
+    let commandline .= ' --homedir ' . s:shellescape(g:GPGHomedir, { 'cygpath': 1 })
   endif
   let commandline .= ' ' . a:dict.args
   let commandline .= ' ' . s:stderrredirnull
@@ -1392,7 +1404,7 @@ endfunction
 function s:GPGExecute(dict)
   let commandline = printf('%s%s', a:dict.ex, s:GPGCommand)
   if (!empty(g:GPGHomedir))
-    let commandline .= ' --homedir ' . s:shellescape(g:GPGHomedir, 1)
+    let commandline .= ' --homedir ' . s:shellescape(g:GPGHomedir, { 'special': 1, 'cygpath': 1 })
   endif
   let commandline .= ' ' . a:dict.args
   if (has_key(a:dict, 'redirect'))
